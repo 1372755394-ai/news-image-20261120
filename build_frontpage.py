@@ -1,215 +1,305 @@
 #!/usr/bin/env python3
-"""Build-time renderer for the news-image-20261120 entry.
+"""Render the 20 November 2026 front page of THE WORLD as a 1024x1024 PNG.
 
-Renders a newspaper front page for Friday 20 November 2026 with PIL
-(crisp vector text, no garbled AI text) around the AI-generated hero
-illustration in assets/. Run once locally; the committed entry.png is what
-the entry program copies to /output/entry.png.
+Everything on the page (headlines, figures, dates) comes from the story list
+in README.md, which was checked against live news on the morning of
+20 November 2026 (Beijing time). The only picture is the pre-generated hero
+illustration in assets/; all text is drawn here with PIL.
 
-Facts (all reported on 19-20 Nov 2026, checked against live news on 20 Nov
-morning Beijing time):
-- Anthropic IPO debut Thu 19 Nov: opened $111.50 (+34% on the $83 offer),
-  intraday high $115.10, briefly over $2tn fully diluted; closed $97.17,
-  +17%, ~$1.76tn; 813m+ shares traded, a debut volume record (Reuters/
-  CNBC via TechDefused, NY Post, AsiaToday).
-- Markets Thu 19 Nov: Dow -1,101.11 (-2.19%) to 49,097.06, first close
-  below 50,000 since June; S&P 500 -147.80 (-2.02%) to 7,175.83, sixth
-  straight loss; Nasdaq -550.69 (-2.25%) to 23,879.20, lowest close since
-  April, 13.5% below its Oct 6 high; only 1 of 30 Dow stocks rose.
-- Nvidia fell 3.30% to $145.98, a sixth straight fall, ~28% off November
-  highs; H200 shipments to China halted; AMD -7.72% after short seller
-  Hunterbrook disclosed a position.
-- Fed: CME FedWatch ~95% for a 25bp December hike (Dec 8-9), ~5-10% for
-  50bp; Gov. Waller floated 50bp and speaks Friday 8:25am ET. Gold fell
-  ~1.8% to ~$3,675, a 14-month low; Bitcoin ~$62,000; 10-yr ~5.05%;
-  VIX 28.43.
-- APEC Shenzhen: first-ever Trump-Xi-Putin trilateral Thu 19 Nov, ~90
-  minutes at Kylin Villa; four-point "Declaration Toward Peace": nuclear
-  war cannot be won, dialogue on nuclear risk, more refined petroleum
-  output, UN reform, ICC must not abuse jurisdiction; Ukraine not
-  mentioned; Trump invited Putin to the December G20 in Miami.
-- Gulf: Iran drones hit Ali Al Salem air base (Kuwait) and Bahrain Wed
-  18 Nov, answering the US strike on an IRGC missile site on Qeshm Island
-  Tue; an ADNOC tanker hit in Hormuz, 11 crew hurt, one missing; war in
-  its ninth month (began 28 Feb 2026).
-- Ukraine: third Kerch Bridge strike in four days — Neptune missiles hit
-  the rail section overnight 19 Nov, train traffic halted, one track
-  reopened ~4pm; Putin rejects a ceasefire; US envoys Kushner and Witkoff
-  meet Zelenskyy in Berlin.
-- Gaza: Israeli tanks crossed the Yellow Line in central Gaza Wed 18 Nov,
-  first publicly announced ground operation since the Oct 2025 ceasefire;
-  three killed; Board of Peace report warns the truce may collapse;
-  1,650+ killed since the ceasefire began.
-- GTA VI launched Thu 19 Nov on PS5 and Xbox Series X|S; Sensor Tower
-  estimates ~19.05m copies and $1.84bn by Thursday afternoon (pre-orders
-  included, no official Take-Two figure); ~6m watched livestreams at 2pm ET.
+Layout is a single vertical flow: a cursor walks down the page and each
+section (masthead, lead story, hero photo, ticker, story grid, footer)
+advances it. No network access, no secrets.
 """
+
+from __future__ import annotations
+
 import os
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HERO = os.path.join(
-    HERE, "assets",
-    "media-generation-hero-chip-market-storm-2026112-0-163c88a4-5e03-4ca7-a6da-e7cdd32ad5ba.webp")
-OUT = os.path.join(HERE, "entry.png")
+HERO_PATH = os.path.join(
+    HERE,
+    "assets",
+    "media-generation-hero-chip-market-storm-2026112-0-163c88a4-5e03-4ca7-a6da-e7cdd32ad5ba.webp",
+)
+OUT_PATH = os.path.join(HERE, "entry.png")
 
-W, H = 1024, 1024
-M = 30  # margin
-PAPER = (246, 241, 231)
+# --- page geometry -------------------------------------------------------
+PAGE_W, PAGE_H = 1024, 1024
+MARGIN = 40                       # side margin; content spans 944 px
+CONTENT_W = PAGE_W - 2 * MARGIN
+MAX_BYTES = 1_000_000
+
+# --- palette -------------------------------------------------------------
+PAPER = (247, 241, 229)           # warm newsprint
 INK = (17, 17, 17)
-RED = (155, 28, 28)
-NAVY = (16, 32, 64)
-GREY = (90, 86, 78)
+SOFT_INK = (68, 60, 52)
+RED = (143, 29, 29)               # kicker / dateline red
+NAVY = (27, 42, 74)              # ticker bar
+RULE = (30, 30, 30)
 
-F_SERIF = "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"
-F_SERIF_R = "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"
-F_SERIF_I = "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf"
-F_SANS = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
-F_SANS_B = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+# --- fonts ---------------------------------------------------------------
+FONT_DIR = "/usr/share/fonts/truetype"
+SERIF = os.path.join(FONT_DIR, "liberation", "LiberationSerif-Regular.ttf")
+SERIF_BOLD = os.path.join(FONT_DIR, "liberation", "LiberationSerif-Bold.ttf")
+SERIF_ITALIC = os.path.join(FONT_DIR, "liberation", "LiberationSerif-Italic.ttf")
+SANS = os.path.join(FONT_DIR, "liberation", "LiberationSans-Regular.ttf")
+SANS_BOLD = os.path.join(FONT_DIR, "liberation", "LiberationSans-Bold.ttf")
 
 
-def font(path, size):
+def font(path: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(path, size)
 
 
-def wrap(draw, text, fnt, max_w):
-    words, lines, cur = text.split(), [], ""
-    for w in words:
-        t = (cur + " " + w).strip()
-        if draw.textlength(t, font=fnt) <= max_w:
-            cur = t
+# --- small drawing helpers ------------------------------------------------
+def text_width(draw: ImageDraw.ImageDraw, text: str,
+               fnt: ImageFont.FreeTypeFont) -> float:
+    return draw.textlength(text, font=fnt)
+
+
+def wrap(draw: ImageDraw.ImageDraw, text: str,
+         fnt: ImageFont.FreeTypeFont, max_width: float) -> list[str]:
+    """Greedy word wrap; returns lines that each fit inside max_width."""
+    lines, current = [], ""
+    for word in text.split():
+        trial = f"{current} {word}".strip()
+        if text_width(draw, trial, fnt) <= max_width or not current:
+            current = trial
         else:
-            if cur:
-                lines.append(cur)
-            cur = w
-    if cur:
-        lines.append(cur)
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
     return lines
 
 
-def centered(draw, y, text, fnt, fill=INK):
-    draw.text((W // 2, y), text, font=fnt, fill=fill, anchor="ma")
-    return y + fnt.size
+def draw_centered(draw: ImageDraw.ImageDraw, cx: int, y: int, text: str,
+                  fnt: ImageFont.FreeTypeFont, fill=INK) -> None:
+    draw.text((cx - text_width(draw, text, fnt) / 2, y), text,
+              font=fnt, fill=fill)
 
 
-def rule(draw, y, w=2, x0=M, x1=W - M):
-    draw.line([(x0, y), (x1, y)], fill=INK, width=w)
+def draw_tracked(draw: ImageDraw.ImageDraw, cx: int, y: int, text: str,
+                 fnt: ImageFont.FreeTypeFont, tracking: int, fill=INK) -> None:
+    """Draw text with extra space between letters, centred on cx."""
+    widths = [draw.textlength(ch, font=fnt) for ch in text]
+    total = sum(widths) + tracking * (len(text) - 1)
+    x = cx - total / 2
+    for ch, w in zip(text, widths):
+        draw.text((x, y), ch, font=fnt, fill=fill)
+        x += w + tracking
 
 
-img = Image.new("RGB", (W, H), PAPER)
-d = ImageDraw.Draw(img)
+def draw_rule(draw: ImageDraw.ImageDraw, y: int, weight: int,
+              x0: int = MARGIN, x1: int = PAGE_W - MARGIN) -> None:
+    draw.line([(x0, y), (x1, y)], fill=RULE, width=weight)
 
-# ---- masthead ----
-y = 16
-centered(d, y, "O N E   D A Y  ·  O N E   P A G E", font(F_SANS_B, 15), GREY)
-y = 38
-centered(d, y, "THE WORLD", font(F_SERIF, 96))
-y = 138
-rule(d, y, 3)
-rule(d, y + 5, 1)
-y = 152
-centered(d, y, "FRIDAY,  20 NOVEMBER 2026", font(F_SERIF, 31), RED)
-y = 190
-rule(d, y, 1)
 
-# ---- lead headline + deck ----
-y = 202
-centered(d, y, "ANTHROPIC UP 17% ON DEBUT", font(F_SERIF, 56))
-y = 262
-deck = ("The Claude-maker opens at $111.50, briefly tops $2tn, then closes "
-        "at $97.17 — as Wall Street suffers a $1,101-point rout")
-for line in wrap(d, deck, font(F_SANS, 20), W - 2 * M - 40):
-    centered(d, y, line, font(F_SANS, 20))
-    y += 26
+def fit_font(draw: ImageDraw.ImageDraw, text: str, path: str,
+             start_size: int, max_width: float) -> ImageFont.FreeTypeFont:
+    """Largest size (stepping down by 2) at which text fits max_width."""
+    size = start_size
+    while size > 10:
+        fnt = font(path, size)
+        if text_width(draw, text, fnt) <= max_width:
+            return fnt
+        size -= 2
+    return font(path, 10)
 
-# ---- hero image ----
-hero = Image.open(HERO).convert("RGB")  # 2736x912
-# crop a wide band: golden chip + storm skyline
-cw, ch = hero.size
-band_w = W - 2 * M
-band_h = 290
-crop_h = int(cw * band_h / band_w)
-top = int((ch - crop_h) * 0.15)
-hero = hero.crop((0, top, cw, top + crop_h))
-hero = hero.resize((band_w, band_h), Image.LANCZOS)
-img.paste(hero, (M, y + 8))
-y = y + 8 + 290 + 8
-d.text((M, y), "A golden chip over a stormy market: Anthropic's record debut "
-       "could not stop a Dow rout.  (Illustration)",
-       font=font(F_SERIF_I, 15), fill=GREY)
-y += 24
 
-# ---- markets ticker ----
-d.rectangle([M, y, W - M, y + 34], fill=NAVY)
-d.text((W // 2, y + 17),
-       "DOW  −2.19%  ·  S&P 500  −2.02%, 6th straight loss  ·  "
-       "NASDAQ  −2.25%  ·  GOLD ~$3,675, 14-mo low",
-       font=font(F_SANS_B, 16), fill=(255, 255, 255), anchor="mm")
-y += 34 + 10
+# --- page builder ---------------------------------------------------------
+class FrontPage:
+    """A blank newsprint sheet plus a cursor that walks down it."""
 
-# ---- story grid: 2 cols x 3 rows ----
-stories = [
-    ("NVIDIA",
-     "Sixth straight fall to $145.98",
-     "AI leader now ~28% off its November highs as the H200 China halt "
-     "bites; AMD −7.7% on a short-seller attack."),
-    ("THE FED",
-     "December hike ~95% priced in",
-     "Traders see a 25bp rise on Dec 8–9 as near-certain; Waller floats "
-     "50bp and speaks on Friday morning."),
-    ("APEC · SHENZHEN",
-     "Trump, Xi, Putin sign declaration",
-     "First-ever trilateral, ~90 minutes at Kylin Villa: nuclear-risk "
-     "talks, more refined oil, UN reform; Ukraine unmentioned."),
-    ("THE GULF",
-     "Iran drones hit Kuwait, Bahrain",
-     "Tehran answers the US strike on Qeshm Island; an ADNOC tanker is "
-     "hit in Hormuz, 11 crew hurt and one missing."),
-    ("UKRAINE",
-     "Kerch bridge hit a third time",
-     "Neptune missiles halt rail traffic for hours; Putin rejects a "
-     "ceasefire as US envoys meet Zelenskyy in Berlin."),
-    ("GAZA",
-     "Tanks cross the Yellow Line",
-     "First announced ground operation since the Oct 2025 truce; three "
-     "killed. Board of Peace warns it may collapse."),
-]
-col_w = (W - 2 * M - 24) // 2
-row_h = 84
-gx0 = M
-for i, (kick, head, body) in enumerate(stories):
-    cx = gx0 + (i % 2) * (col_w + 24)
-    cy = y + (i // 2) * row_h
-    d.text((cx, cy), kick, font=font(F_SANS_B, 14), fill=RED)
-    hl = wrap(d, head, font(F_SERIF, 23), col_w)
-    hy = cy + 19
-    for line in hl[:1]:
-        d.text((cx, hy), line, font=font(F_SERIF, 23), fill=INK)
-        hy += 27
-    by = hy + 1
-    for line in wrap(d, body, font(F_SANS, 15), col_w)[:2]:
-        d.text((cx, by), line, font=font(F_SANS, 15), fill=(51, 51, 51))
-        by += 19
-    if i % 2 == 0:
-        d.line([(cx + col_w + 12, cy), (cx + col_w + 12, cy + row_h - 12)],
-               fill=(200, 192, 175), width=1)
+    def __init__(self) -> None:
+        self.image = Image.new("RGB", (PAGE_W, PAGE_H), PAPER)
+        self.draw = ImageDraw.Draw(self.image)
+        self.y = 0
 
-y = y + 3 * row_h + 2
-rule(d, y, 1)
-y += 8
-d.text((M, y), "ALSO:  GTA VI: ~19m copies, $1.84bn by launch day (Sensor "
-       "Tower est.)  ·  Bitcoin ~$62,000  ·  10-yr yield ~5.05%",
-       font=font(F_SANS_B, 14), fill=INK)
-y += 24
-d.text((W // 2, y), "Every story above happened or was first reported on "
-       "Friday 20 November 2026.",
-       font=font(F_SERIF_I, 14), fill=GREY, anchor="ma")
+    # -- masthead block ----------------------------------------------------
+    def masthead(self) -> None:
+        self.y = 22
+        eyebrow = font(SANS_BOLD, 15)
+        draw_tracked(self.draw, PAGE_W // 2, self.y, "ONE DAY · ONE PAGE",
+                     eyebrow, tracking=6, fill=SOFT_INK)
+        self.y += 30
+        name = fit_font(self.draw, "THE WORLD", SERIF_BOLD, 118, CONTENT_W)
+        draw_centered(self.draw, PAGE_W // 2, self.y - 14, "THE WORLD",
+                      name)
+        self.y += 98
+        draw_rule(self.draw, self.y, 3)
+        self.y += 5
+        draw_rule(self.draw, self.y, 1)
+        self.y += 12
+        date_font = font(SERIF_BOLD, 30)
+        draw_centered(self.draw, PAGE_W // 2, self.y,
+                      "FRIDAY,  20 NOVEMBER 2026", date_font, fill=RED)
+        self.y += 42
+        draw_rule(self.draw, self.y, 1)
+        self.y += 14
 
-# A real PNG if it fits the 1 MiB gate; the photo band usually keeps it
-# well under, and a true PNG is the cleanest thing to hand the gate.
-img.save(OUT, "PNG", optimize=True)
-size = os.path.getsize(OUT)
-if size > 1048576:
-    img.save(OUT, "JPEG", quality=88, optimize=True)
-    size = os.path.getsize(OUT)
-print("saved", OUT, size, "bytes")
+    # -- lead story --------------------------------------------------------
+    def lead(self) -> None:
+        headline = fit_font(self.draw, "ANTHROPIC UP 17% ON DEBUT",
+                            SERIF_BOLD, 58, CONTENT_W)
+        draw_centered(self.draw, PAGE_W // 2, self.y,
+                      "ANTHROPIC UP 17% ON DEBUT", headline)
+        self.y += 58
+        deck_font = font(SERIF, 22)
+        deck = ("The Claude-maker opens at $111.50, briefly tops $2tn, then "
+                "closes at $97.17 — as Wall Street suffers a $1,101-point rout")
+        for line in wrap(self.draw, deck, deck_font, CONTENT_W - 40):
+            draw_centered(self.draw, PAGE_W // 2, self.y, line, deck_font)
+            self.y += 26
+        self.y += 8
+
+    # -- hero illustration -------------------------------------------------
+    def hero(self) -> None:
+        photo = Image.open(HERO_PATH).convert("RGB")
+        # Crop the 3:1 source to the banner's wider aspect, centred.
+        target_ratio = CONTENT_W / 224
+        src_w, src_h = photo.size
+        if src_w / src_h > target_ratio:
+            new_w = int(src_h * target_ratio)
+            left = (src_w - new_w) // 2
+            photo = photo.crop((left, 0, left + new_w, src_h))
+        else:
+            new_h = int(src_w / target_ratio)
+            top = (src_h - new_h) // 2
+            photo = photo.crop((0, top, src_w, top + new_h))
+        photo = photo.resize((CONTENT_W, 224), Image.LANCZOS)
+        self.image.paste(photo, (MARGIN, self.y))
+        self.draw.rectangle([MARGIN, self.y, PAGE_W - MARGIN, self.y + 224],
+                            outline=RULE, width=1)
+        self.y += 224 + 8
+        caption = font(SERIF_ITALIC, 16)
+        self.draw.text(
+            (MARGIN, self.y),
+            "A golden chip over a stormy market: Anthropic's record debut "
+            "could not stop a Dow rout. (Illustration)",
+            font=caption, fill=SOFT_INK)
+        self.y += 20
+
+    # -- markets ticker ----------------------------------------------------
+    def ticker(self) -> None:
+        bar_h = 36
+        self.draw.rectangle([MARGIN, self.y, PAGE_W - MARGIN, self.y + bar_h],
+                            fill=NAVY)
+        ticker_font = font(SANS_BOLD, 19)
+        line = ("DOW −2.19%  ·  S&P 500 −2.02%, 6th straight loss  ·  "
+                "NASDAQ −2.25%  ·  GOLD ~$3,675, 14-mo low")
+        draw_centered(self.draw, PAGE_W // 2, self.y + 8, line, ticker_font,
+                      fill=(255, 255, 255))
+        self.y += bar_h + 10
+
+    # -- one story inside the two-column grid ------------------------------
+    def story(self, x: int, col_w: int, kicker: str, headline: str,
+              body: str) -> int:
+        """Draw a story at column x; return the y just below it."""
+        y = self.y
+        kick_font = font(SANS_BOLD, 15)
+        self.draw.text((x, y), kicker, font=kick_font, fill=RED)
+        y += 22
+        head_font = font(SERIF_BOLD, 25)
+        for line in wrap(self.draw, headline, head_font, col_w):
+            self.draw.text((x, y), line, font=head_font, fill=INK)
+            y += 28
+        y += 2
+        body_font = font(SERIF, 17)
+        for line in wrap(self.draw, body, body_font, col_w):
+            self.draw.text((x, y), line, font=body_font, fill=INK)
+            y += 21
+        return y + 10
+
+    def story_grid(self) -> None:
+        gutter = 30
+        col_w = (CONTENT_W - gutter) // 2
+        left_x, right_x = MARGIN, MARGIN + col_w + gutter
+        grid_top = self.y
+        left = [
+            ("NVIDIA",
+             "Sixth straight fall to $145.98",
+             "AI leader now ~28% off its November highs as the H200 China "
+             "halt bites; AMD −7.7% on a short-seller attack."),
+            ("APEC · SHENZHEN",
+             "Trump, Xi, Putin sign declaration",
+             "First-ever trilateral, ~90 minutes at Kylin Villa: "
+             "nuclear-risk talks, more refined oil, UN reform; Ukraine "
+             "unmentioned."),
+            ("UKRAINE",
+             "Kerch bridge hit a third time",
+             "Neptune missiles halt rail traffic for hours; Putin rejects "
+             "a ceasefire as US envoys meet Zelenskyy in Berlin."),
+        ]
+        right = [
+            ("THE FED",
+             "December hike ~95% priced in",
+             "Traders see a 25bp rise on Dec 8–9 as near-certain; Waller "
+             "floats 50bp and speaks on Friday morning."),
+            ("THE GULF",
+             "Iran drones hit Kuwait, Bahrain",
+             "Tehran answers the US strike on Qeshm Island; an ADNOC "
+             "tanker is hit in Hormuz, 11 crew hurt and one missing."),
+            ("GAZA",
+             "Tanks cross the Yellow Line",
+             "First announced ground operation since the Oct 2025 truce; "
+             "three killed. Board of Peace warns it may collapse."),
+        ]
+        # Left column flows top to bottom; remember where it ends.
+        col_y = grid_top
+        for kicker, headline, body in left:
+            self.y = col_y
+            col_y = self.story(left_x, col_w, kicker, headline, body)
+        left_bottom = col_y
+        col_y = grid_top
+        for kicker, headline, body in right:
+            self.y = col_y
+            col_y = self.story(right_x, col_w, kicker, headline, body)
+        right_bottom = col_y
+        # Vertical divider between the columns, spanning the taller side.
+        mid_x = MARGIN + col_w + gutter // 2
+        self.draw.line([(mid_x, grid_top),
+                        (mid_x, max(left_bottom, right_bottom) - 12)],
+                       fill=RULE, width=1)
+        self.y = max(left_bottom, right_bottom) + 2
+
+    # -- bottom strip and footer -------------------------------------------
+    def footer(self) -> None:
+        draw_rule(self.draw, self.y, 1)
+        self.y += 10
+        also_font = font(SANS_BOLD, 17)
+        also = ("ALSO:   GTA VI: ~19m copies, $1.84bn by launch day "
+                "(Sensor Tower est.)  ·  Bitcoin ~$62,000  ·  "
+                "10-yr yield ~5.05%")
+        draw_centered(self.draw, PAGE_W // 2, self.y, also, also_font)
+        self.y += 26
+        note = font(SERIF_ITALIC, 15)
+        draw_centered(self.draw, PAGE_W // 2, self.y,
+                      "Every story above happened or was first reported on "
+                      "Friday 20 November 2026.",
+                      note, fill=SOFT_INK)
+        self.y += 24
+
+    def build(self) -> None:
+        self.masthead()
+        self.lead()
+        self.hero()
+        self.ticker()
+        self.story_grid()
+        self.footer()
+        assert self.y <= PAGE_H, f"page overflowed: cursor at {self.y}"
+        self.image.save(OUT_PATH, format="PNG", optimize=True)
+
+
+def main() -> None:
+    page = FrontPage()
+    page.build()
+    size = os.path.getsize(OUT_PATH)
+    print(f"wrote {OUT_PATH}: {PAGE_W}x{PAGE_H}, {size} bytes, "
+          f"cursor ended at y={page.y}")
+    if size >= MAX_BYTES:
+        raise SystemExit(f"entry.png is {size} bytes, over the 1 MiB limit")
+
+
+if __name__ == "__main__":
+    main()
